@@ -1,65 +1,70 @@
 <template>
   <div class="asisteuco-app">
-    <!-- Encabezado -->
     <header class="app-header">
       <div class="header-content">
-        <h1 class="app-title">AsisteUCO</h1>
-        <p class="app-subtitle">Gestión de Asistencias Universitarias</p>
+        <img src="/Logo_Mesa-de-trabajo-1-1.png" alt="Logo UCO" class="header-logo" />
+        <div class="titles">
+          <h1 class="app-title">AsisteUCO</h1>
+          <p class="app-subtitle">Gestión de Asistencias Universitarias</p>
+        </div>
       </div>
     </header>
 
-    <!-- Contenido principal -->
     <main class="app-main">
-      <!-- Panel de control -->
       <div class="control-panel">
         <div class="control-group">
-          <label class="control-label">Seleccione el curso:</label>
-          <select v-model="selectedCourse" class="course-select">
-            <option v-for="course in courses" :key="course.id" :value="course.id">
-              {{ course.name }}
+          <label class="control-label">Seleccione el grupo:</label>
+          <select v-model="selectedGrupoId" @change="loadEstudiantes" class="course-select">
+            <option disabled value="">Seleccione un grupo</option>
+            <option v-for="grupo in grupos" :key="grupo.id" :value="grupo.id">
+              {{ grupo.materia.nombre }} - {{ grupo.profesor.nombresCompletos }}
             </option>
           </select>
         </div>
 
         <div class="control-group">
           <label class="control-label">Seleccione la fecha:</label>
-          <input type="date" v-model="selectedDate" class="date-picker" :max="today" />
-        </div>
-      </div>
-
-      <!-- Lista de estudiantes -->
-      <div class="student-list-container">
-        <div class="student-list">
-          <div class="student-item" v-for="student in filteredStudents" :key="student.id">
-            <div class="student-info">
-              <span class="student-name">{{ student.name }}</span>
-            </div>
-
-            <div class="attendance-controls">
-              <button
-                @click="markPresent(student.id)"
-                class="attendance-btn present"
-                :class="{ active: student.present }"
-              >
-                <i class="fas fa-check"></i> Presente
-              </button>
-
-              <button
-                @click="markAbsent(student.id)"
-                class="attendance-btn absent"
-                :class="{ active: !student.present }"
-              >
-                <i class="fas fa-times"></i> Ausente
-              </button>
-            </div>
+          <div class="date-input-container">
+            <input type="date" v-model="selectedDate" :max="today" class="date-picker" />
           </div>
         </div>
       </div>
 
-      <!-- Botón de acción -->
+      <div class="student-list">
+        <div v-if="estudiantesGrupo.length === 0" class="empty-state">
+          <p>No hay estudiantes registrados en este grupo</p>
+        </div>
+
+        <div class="student-item" v-for="eg in estudiantesGrupo" :key="eg.id">
+          <div class="student-info">
+            <div class="student-name">{{ eg.estudiante.nombresCompletos }}</div>
+          </div>
+          <div class="attendance-controls">
+            <button
+              @click="markPresent(eg.id)"
+              class="attendance-btn present"
+              :class="{ active: asistenciaMap[eg.id] === true }"
+            >
+              Presente
+            </button>
+            <button
+              @click="markAbsent(eg.id)"
+              class="attendance-btn absent"
+              :class="{ active: asistenciaMap[eg.id] === false }"
+            >
+              Ausente
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div class="action-container">
-        <button class="action-btn" @click="submitAttendance">
-          <i class="fas fa-save"></i> Guardar Asistencias
+        <button
+          class="action-btn"
+          @click="submitAttendance"
+          :disabled="Object.keys(asistenciaMap).length === 0"
+        >
+          Guardar Asistencias
         </button>
       </div>
     </main>
@@ -67,254 +72,307 @@
 </template>
 
 <script setup lang="ts">
-import { ref, computed } from 'vue'
+import { ref, onMounted } from 'vue'
+import {
+  getGrupos,
+  getEstudiantesPorGrupo,
+  registrarAsistencia,
+} from '@/services/attendanceService'
 
-interface Student {
-  id: number
-  name: string
-  courseId: number
-  present: boolean
+interface Grupo {
+  id: string
+  materia: { nombre: string }
+  profesor: { nombresCompletos: string }
 }
 
-interface Course {
-  id: number
-  name: string
+interface EstudianteGrupo {
+  id: string
+  estudiante: { nombresCompletos: string }
 }
 
-const courses = ref<Course[]>([
-  { id: 1, name: 'INGENIERÍA DE SOFTWARE II' },
-  { id: 2, name: 'BASE DE DATOS AVANZADA' },
-  { id: 3, name: 'ARQUITECTURA DE SISTEMAS' },
-])
+interface RegistrarAsistenciaPayload {
+  grupoId: string
+  fecha: string
+  estudiantes: { estudianteGrupoId: string; asistio: boolean }[]
+}
 
-const students = ref<Student[]>([
-  { id: 1, name: 'María González Pérez', courseId: 1, present: false },
-  { id: 2, name: 'Carlos Mendoza Ruiz', courseId: 1, present: false },
-  { id: 3, name: 'Lucía Ramírez Sánchez', courseId: 1, present: false },
-  { id: 4, name: 'Pedro Castillo Jiménez', courseId: 2, present: false },
-])
+const grupos = ref<Grupo[]>([])
+const estudiantesGrupo = ref<EstudianteGrupo[]>([])
+const selectedGrupoId = ref<string>('')
 
-const selectedCourse = ref<number>(1)
 const today = new Date().toISOString().split('T')[0]
 const selectedDate = ref<string>(today)
 
-const filteredStudents = computed(() => {
-  return students.value.filter((s) => s.courseId === selectedCourse.value)
-})
+const asistenciaMap = ref<Record<string, boolean>>({})
 
-const markPresent = (id: number) => {
-  const student = students.value.find((s) => s.id === id)
-  if (student) student.present = true
+const loadEstudiantes = async () => {
+  if (!selectedGrupoId.value) return
+  estudiantesGrupo.value = await getEstudiantesPorGrupo(selectedGrupoId.value)
+  asistenciaMap.value = {}
 }
 
-const markAbsent = (id: number) => {
-  const student = students.value.find((s) => s.id === id)
-  if (student) student.present = false
+const markPresent = (id: string) => {
+  asistenciaMap.value[id] = true
 }
 
-const submitAttendance = () => {
-  console.log('Asistencias guardadas:', {
+const markAbsent = (id: string) => {
+  asistenciaMap.value[id] = false
+}
+
+const submitAttendance = async () => {
+  const payload: RegistrarAsistenciaPayload = {
+    grupoId: selectedGrupoId.value,
     fecha: selectedDate.value,
-    curso: selectedCourse.value,
-    estudiantes: filteredStudents.value,
-  })
-  alert('Asistencias guardadas exitosamente')
+    estudiantes: Object.entries(asistenciaMap.value).map(([estudianteGrupoId, asistio]) => ({
+      estudianteGrupoId,
+      asistio,
+    })),
+  }
+  await registrarAsistencia(payload)
+  alert('Asistencias guardadas correctamente')
 }
+
+onMounted(async () => {
+  grupos.value = await getGrupos()
+  if (grupos.value.length > 0) {
+    selectedGrupoId.value = grupos.value[0].id
+    await loadEstudiantes()
+  }
+})
 </script>
 
 <style>
-@import url('https://cdnjs.cloudflare.com/ajax/libs/font-awesome/5.15.4/css/all.min.css');
-
 :root {
-  --primary: #1b5e20;
-  --accent: #fbc02d;
-  --background: #f1f8e9;
-  --text-dark: #263238;
-  --text-light: #ffffff;
-  --success: #388e3c;
-  --danger: #c62828;
-  --white: #ffffff;
-  --shadow: rgba(0, 0, 0, 0.1);
+  --verde-100: #f0fdf4;
+  --verde-200: #bbf7d0;
+  --verde-300: #86efac;
+  --verde-500: #22c55e;
+  --verde-600: #16a34a;
+  --verde-700: #15803d;
+  --amarillo-100: #fef9c3;
+  --amarillo-300: #fde047;
+  --amarillo-500: #facc15;
+  --amarillo-600: #eab308;
+  --gris-100: #f9fafb;
+  --gris-300: #d1d5db;
+  --gris-500: #6b7280;
+  --gris-700: #374151;
+  --gris-800: #1f2937;
+  --blanco: #ffffff;
+  --sombra-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
+  --sombra: 0 4px 6px -1px rgba(0, 0, 0, 0.1), 0 2px 4px -1px rgba(0, 0, 0, 0.06);
+  --sombra-md: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+  --sombra-lg: 0 20px 25px -5px rgba(0, 0, 0, 0.1), 0 10px 10px -5px rgba(0, 0, 0, 0.04);
 }
+</style>
 
-body {
-  background-color: var(--background);
-  color: var(--text-dark);
-  font-family: 'Segoe UI', sans-serif;
-  font-size: 16px;
+<style scoped>
+@import url('https://fonts.googleapis.com/css2?family=Poppins:wght@400;500;600;700&display=swap');
+
+* {
+  box-sizing: border-box;
   margin: 0;
   padding: 0;
+  font-family: 'Poppins', sans-serif;
 }
 
 .asisteuco-app {
-  width: 100vw;
-  min-height: 100vh;
   display: flex;
   flex-direction: column;
   align-items: center;
-  padding: 2rem;
-  box-sizing: border-box;
+  padding: 2rem 1rem;
+  width: 100%;
+  min-height: 100vh;
+  background: linear-gradient(135deg, var(--amarillo-100), var(--verde-500));
 }
 
 .app-header {
-  background: var(--primary);
-  color: var(--text-light);
+  background: linear-gradient(135deg, var(--amarillo-300), var(--verde-700));
+  color: var(--blanco);
   padding: 2rem;
-  text-align: center;
-  border-radius: 12px;
+  border-radius: 20px;
   margin-bottom: 2rem;
-  box-shadow: 0 4px 12px var(--shadow);
-  width: 100%;
-  max-width: 800px;
+  box-shadow: var(--sombra-lg);
+}
+
+.header-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 1rem;
+  text-align: center;
+  flex-wrap: wrap;
+}
+
+.header-logo {
+  width: 150px;
+  height: auto;
+  object-fit: contain;
+}
+
+.titles {
+  flex: 1;
 }
 
 .app-title {
-  font-size: 3rem;
-  font-weight: bold;
+  font-size: 2.2rem;
+  font-weight: 700;
+  margin: 0;
+  color: var(--gris-800);
 }
 
 .app-subtitle {
-  font-size: 1.3rem;
-  opacity: 0.95;
-}
-
-.app-main {
-  flex: 1;
-  width: 100%;
-  max-width: 800px;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-}
-
-.control-panel,
-.student-list,
-.student-item,
-.action-container {
-  width: 100%;
-  max-width: 700px;
-  margin: 0 auto;
+  font-size: 1.1rem;
+  color: var(--gris-800);
 }
 
 .control-panel {
-  background: var(--white);
   display: flex;
-  justify-content: center;
-  flex-wrap: wrap;
-  gap: 2rem;
-  padding: 1.5rem 2rem;
+  flex-direction: column;
+  gap: 1.5rem;
+
+  /* FONDO CON COLOR */
+  background: var(--verde-600); /* Degradado verde claro */
+
+  padding: 1.5rem;
   border-radius: 12px;
   margin-bottom: 2rem;
-  box-shadow: 0 3px 12px var(--shadow);
 }
 
 .control-group {
-  display: flex;
-  flex-direction: column;
-  gap: 0.5rem;
+  flex: 1;
   min-width: 250px;
+}
+
+.control-label,
+.student-name {
+  color: var(--gris-800);
 }
 
 .course-select,
 .date-picker {
-  padding: 0.6rem 1rem;
-  border: 1px solid #ccc;
-  border-radius: 6px;
+  width: 100%;
+  padding: 0.6rem;
+  border: 1px solid var(--verde-800);
+  border-radius: 8px;
+  background-color: var(--blanco);
+  box-shadow: var(--sombra-sm);
   font-size: 1rem;
-  width: 100%;
-}
-
-.student-list-container {
-  width: 100%;
-  display: flex;
-  justify-content: center;
 }
 
 .student-list {
-  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 1rem;
 }
 
 .student-item {
-  background: var(--white);
-  border-radius: 10px;
-  padding: 1.2rem 1.8rem;
-  margin-bottom: 1rem;
   display: flex;
   justify-content: space-between;
   align-items: center;
-  box-shadow: 0 2px 8px var(--shadow);
-  transition: transform 0.2s;
-}
-
-.student-item:hover {
-  transform: translateY(-2px);
+  background: var(--verde-800);
+  padding: 1rem;
+  border-radius: 10px;
+  box-shadow: var(--sombra);
 }
 
 .student-info {
-  font-size: 1.2rem;
+  display: flex;
+  align-items: center;
+  gap: 1rem;
+}
+
+.student-name {
+  font-size: 1.1rem;
   font-weight: 500;
 }
 
 .attendance-controls {
   display: flex;
-  gap: 1rem;
+  gap: 0.5rem;
 }
 
 .attendance-btn {
-  padding: 0.6rem 1.4rem;
+  padding: 0.5rem 1rem;
+  border-radius: 8px;
   border: none;
-  border-radius: 6px;
+  font-size: 0.95rem;
+  font-weight: 600;
   cursor: pointer;
-  font-weight: bold;
-  display: flex;
-  align-items: center;
-  gap: 0.5rem;
-  font-size: 1rem;
-  transition: background 0.3s ease;
+  transition: background-color 0.2s ease;
+  box-shadow: var(--sombra-sm);
 }
 
 .attendance-btn.present {
-  background-color: #e8f5e9;
-  color: var(--success);
+  background-color: var(--verde-200);
+  color: var(--verde-700);
 }
 
 .attendance-btn.present.active {
-  background-color: var(--success);
-  color: var(--text-light);
+  background-color: var(--verde-700);
+  color: var(--blanco);
 }
 
 .attendance-btn.absent {
-  background-color: #ffebee;
-  color: var(--danger);
+  background-color: #fde2e2;
+  color: #b91c1c;
 }
 
 .attendance-btn.absent.active {
-  background-color: var(--danger);
-  color: var(--text-light);
+  background-color: #dc2626;
+  color: var(--blanco);
 }
 
 .action-container {
   margin-top: 2rem;
-  display: flex;
-  justify-content: center;
-  width: 100%;
+  text-align: right;
 }
 
 .action-btn {
-  background-color: var(--primary);
-  color: var(--text-light);
-  padding: 1rem 2.5rem;
+  padding: 0.75rem 1.5rem;
+  font-size: 1rem;
+  font-weight: 600;
+  background-color: #eab308; /* amarillo fuerte */
+  color: #1f2937;
   border: none;
-  border-radius: 10px;
-  font-size: 1.2rem;
-  font-weight: bold;
+  border-radius: 12px;
   cursor: pointer;
-  box-shadow: 0 5px 15px var(--shadow);
-  transition: all 0.3s ease;
+  box-shadow: var(--sombra-md);
+  transition:
+    background-color 0.3s ease,
+    transform 0.2s ease;
 }
 
-.action-btn:hover {
-  background-color: #2e7d32;
-  transform: translateY(-3px);
+.action-btn:hover:not(:disabled) {
+  background-color: #eab308; /* amarillo más claro al pasar el mouse */
+  transform: scale(1.03);
+}
+
+.action-btn:disabled {
+  background-color: #eab308; /* amarillo pálido cuando está desactivado */
+  color: #000000;
+  cursor: not-allowed;
+  opacity: 0.6;
+}
+
+.empty-state {
+  text-align: center;
+  padding: 2rem;
+  color: var(--gris-700);
+}
+
+@media (max-width: 768px) {
+  .header-content {
+    flex-direction: column;
+    text-align: center;
+  }
+
+  .control-panel {
+    flex-direction: column;
+  }
+
+  .action-container {
+    text-align: center;
+  }
 }
 </style>
